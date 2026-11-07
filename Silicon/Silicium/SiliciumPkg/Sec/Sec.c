@@ -18,6 +18,213 @@
 
 #include "Sec.h"
 
+#ifdef UNIXNU_BUILD
+#include <Library/BaseLib.h>
+#include <Library/FdtLib.h>
+#include <Guid/UniXNUBootHandoff.h>
+#include "BootHandoffRange.h"
+
+// Contract consumed by UniXNU's shared UniXNURamDiskDxe.
+STATIC CONST EFI_GUID mUniXNUEntryArgHobGuid = {
+  0xDAEE82E6, 0x8090, 0x4E72, { 0xBF, 0xB9, 0x78, 0xC1, 0x3C, 0xD4, 0xE3, 0x59 }
+};
+STATIC CONST EFI_GUID mHandoffDiagnosticGuid = UNIXNU_BOOT_HANDOFF_DIAGNOSTIC_GUID;
+
+STATIC
+UINT64
+PrepareBootHandoff (
+  IN UINT64  IncomingArg
+  )
+{
+  CONST VOID  *Incoming;
+  VOID        *Copy;
+  CONST VOID  *StartProp;
+  CONST VOID  *EndProp;
+  UINT64      Start;
+  UINT64      End;
+  UINT64      Length;
+  UINT64      Cell64;
+  UINT32      Cell32;
+  UINT32      FdtBytes;
+  INT32       Chosen;
+  INT32       StartLength;
+  INT32       EndLength;
+
+  // ABL can hand over its FDT in a low bootloader RAM area (this phone
+  // reports 0x44ffe000 with the MMU off). Read it before MemoryPeim replaces
+  // that addressability with the platform map, and retain a bounded copy in
+  // the already reserved Kernel window. Do not infer an address offset.
+  if (((IncomingArg & 3) != 0) || (IncomingArg < 0x40000000ULL) ||
+      (IncomingArg > 0xA0000000ULL - 40))
+  {
+    return IncomingArg;
+  }
+
+  Incoming = (CONST VOID *)(UINTN)IncomingArg;
+  if (FdtCheckHeader (Incoming) != 0) {
+    return IncomingArg;
+  }
+
+  FdtBytes = FdtTotalSize (Incoming);
+  if ((FdtBytes < 40) || (FdtBytes > SIZE_1MB) ||
+      (FdtBytes > 0xA0000000ULL - IncomingArg) ||
+      !BootHandoffRangeWithin (UNIXNU_FDT_COPY_BASE, FdtBytes, UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END))
+  {
+    return IncomingArg;
+  }
+
+  Copy = (VOID *)(UINTN)UNIXNU_FDT_COPY_BASE;
+  CopyMem (Copy, Incoming, FdtBytes);
+  Chosen = FdtPathOffset (Copy, "/chosen");
+  if (Chosen < 0) {
+    return UNIXNU_FDT_COPY_BASE;
+  }
+
+  StartProp = FdtGetProp (Copy, Chosen, "linux,initrd-start", &StartLength);
+  EndProp   = FdtGetProp (Copy, Chosen, "linux,initrd-end", &EndLength);
+  if ((StartProp == NULL) || (EndProp == NULL) ||
+      ((StartLength != 4) && (StartLength != 8)) ||
+      ((EndLength != 4) && (EndLength != 8)))
+  {
+    return UNIXNU_FDT_COPY_BASE;
+  }
+
+  Start = (StartLength == 8) ? Fdt64ToCpu (ReadUnaligned64 (StartProp)) : Fdt32ToCpu (ReadUnaligned32 (StartProp));
+  End   = (EndLength == 8) ? Fdt64ToCpu (ReadUnaligned64 (EndProp)) : Fdt32ToCpu (ReadUnaligned32 (EndProp));
+  if ((End <= Start) || (Start < 0x40000000ULL) || (End > 0xA0000000ULL)) {
+    return UNIXNU_FDT_COPY_BASE;
+  }
+
+  Length = End - Start;
+  // The OS FAT payload can fill the 20 MiB reserved slot below the FDT.
+  // Keep both copies disjoint and contained before touching payload memory.
+  if (!BootHandoffCopiesWithin (UNIXNU_FDT_COPY_BASE, FdtBytes,
+        UNIXNU_INITRD_COPY_BASE, Length, UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END))
+  {
+    return UNIXNU_FDT_COPY_BASE;
+  }
+
+  CopyMem ((VOID *)(UINTN)UNIXNU_INITRD_COPY_BASE, (CONST VOID *)(UINTN)Start, (UINTN)Length);
+  if (StartLength == 8) {
+    Cell64 = CpuToFdt64 (UNIXNU_INITRD_COPY_BASE);
+    if (FdtSetProp (Copy, Chosen, "linux,initrd-start", &Cell64, sizeof (Cell64)) != 0) {
+      return UNIXNU_FDT_COPY_BASE;
+    }
+  } else {
+    Cell32 = CpuToFdt32 ((UINT32)UNIXNU_INITRD_COPY_BASE);
+    if (FdtSetProp (Copy, Chosen, "linux,initrd-start", &Cell32, sizeof (Cell32)) != 0) {
+      return UNIXNU_FDT_COPY_BASE;
+    }
+  }
+
+  if (EndLength == 8) {
+    Cell64 = CpuToFdt64 (UNIXNU_INITRD_COPY_BASE + Length);
+    if (FdtSetProp (Copy, Chosen, "linux,initrd-end", &Cell64, sizeof (Cell64)) != 0) {
+      return UNIXNU_FDT_COPY_BASE;
+    }
+  } else {
+    Cell32 = CpuToFdt32 ((UINT32)(UNIXNU_INITRD_COPY_BASE + Length));
+    if (FdtSetProp (Copy, Chosen, "linux,initrd-end", &Cell32, sizeof (Cell32)) != 0) {
+      return UNIXNU_FDT_COPY_BASE;
+    }
+  }
+
+  return UNIXNU_FDT_COPY_BASE;
+}
+
+STATIC
+VOID
+PublishBootHandoff (
+  IN UINT64  EntryArg,
+  IN UINT64  RawEntryArg,
+  IN UINT64  EntrySctlr,
+  IN UINT64  EntryPar
+  )
+{
+  CONST VOID  *Fdt;
+  CONST VOID  *StartProp;
+  CONST VOID  *EndProp;
+  UINT64      FdtSize;
+  UINT64      Start;
+  UINT64      End;
+  INT32       Chosen;
+  INT32       StartLength;
+  INT32       EndLength;
+  UNIXNU_BOOT_HANDOFF_DIAGNOSTIC  Record;
+  UNIXNU_BOOT_HANDOFF_DIAGNOSTIC  *Diagnostic;
+
+  ZeroMem (&Record, sizeof (Record));
+  Record.EntryArg = EntryArg;
+  Record.Status   = 1;
+  Record.RawEntryArg = RawEntryArg;
+  Record.EntrySctlr  = EntrySctlr;
+  Record.EntryPar    = EntryPar;
+  Diagnostic = BuildGuidDataHob (&mHandoffDiagnosticGuid, &Record, sizeof (Record));
+
+  // Check the address before dereferencing it. This window is mapped and
+  // EfiReservedMemoryType in lavender's MemoryMapLib, before any DXE allocation.
+  if (((EntryArg & 3) != 0) ||
+      !BootHandoffRangeWithin (EntryArg, 40, UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END))
+  {
+    DEBUG ((DEBUG_ERROR, "LAVENDERHOB: x0 0x%lx outside the reserved handoff window\n", EntryArg));
+    return;
+  }
+
+  Fdt = (CONST VOID *)(UINTN)EntryArg;
+  Diagnostic->Status = 2;
+  if (FdtCheckHeader (Fdt) != 0) {
+    DEBUG ((DEBUG_ERROR, "LAVENDERHOB: x0 is not an FDT\n"));
+    return;
+  }
+
+  FdtSize = FdtTotalSize (Fdt);
+  Diagnostic->FdtBytes = (UINT32)FdtSize;
+  Diagnostic->Status   = 3;
+  if ((FdtSize < 40) ||
+      !BootHandoffRangeWithin (EntryArg, FdtSize, UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END))
+  {
+    DEBUG ((DEBUG_ERROR, "LAVENDERHOB: FDT extends outside reserved memory\n"));
+    return;
+  }
+
+  Chosen = FdtPathOffset (Fdt, "/chosen");
+  Diagnostic->Status = (Chosen < 0) ? 4 : 5;
+  if (Chosen >= 0) {
+    StartProp = FdtGetProp (Fdt, Chosen, "linux,initrd-start", &StartLength);
+    EndProp   = FdtGetProp (Fdt, Chosen, "linux,initrd-end", &EndLength);
+    if ((StartProp != NULL) || (EndProp != NULL)) {
+      Diagnostic->Status = 6;
+      if ((StartProp == NULL) || (EndProp == NULL) ||
+          ((StartLength != 4) && (StartLength != 8)) ||
+          ((EndLength != 4) && (EndLength != 8)))
+      {
+        DEBUG ((DEBUG_ERROR, "LAVENDERHOB: malformed initrd properties\n"));
+        return;
+      }
+
+      Start = (StartLength == 8) ? Fdt64ToCpu (ReadUnaligned64 (StartProp)) : Fdt32ToCpu (ReadUnaligned32 (StartProp));
+      End   = (EndLength == 8) ? Fdt64ToCpu (ReadUnaligned64 (EndProp)) : Fdt32ToCpu (ReadUnaligned32 (EndProp));
+      Diagnostic->InitrdStart = Start;
+      Diagnostic->InitrdEnd   = End;
+      Diagnostic->Status     = 7;
+      if ((End <= Start) || ((End - Start) % 512 != 0) ||
+          !BootHandoffRangeWithin (Start, End - Start, UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END) ||
+          ((Start < EntryArg + FdtSize) && (EntryArg < End)))
+      {
+        DEBUG ((DEBUG_ERROR, "LAVENDERHOB: initrd 0x%lx-0x%lx is not a protected, disjoint sector range\n", Start, End));
+        return;
+      }
+
+      DEBUG ((DEBUG_ERROR, "LAVENDERHOB: reserved initrd 0x%lx-0x%lx\n", Start, End));
+      Diagnostic->Status = 0;
+    }
+  }
+
+  BuildGuidDataHob (&mUniXNUEntryArgHobGuid, &EntryArg, sizeof (EntryArg));
+  DEBUG ((DEBUG_ERROR, "LAVENDERHOB: preserved FDT 0x%lx (%lu bytes)\n", EntryArg, FdtSize));
+}
+#endif
+
 #ifndef MDEPKG_NDEBUG
 STATIC
 VOID
@@ -90,9 +297,15 @@ InitializeMemory (VOID)
 
 STATIC
 VOID
-SecMain (VOID)
+SecMain (IN UINT64 EntryArg, IN UINT64 RawEntryArg, IN UINT64 EntrySctlr, IN UINT64 EntryPar)
 {
   EFI_STATUS Status;
+
+#ifdef UNIXNU_BUILD
+  // The incoming address must be consumed while the bootloader handoff is
+  // still accessible, before initializing the platform MMU and DXE heap.
+  EntryArg = PrepareBootHandoff (RawEntryArg);
+#endif
 
   // Do Platform Specific Initialization
   PlatformInitialize ();
@@ -130,6 +343,10 @@ SecMain (VOID)
     return;
   }
 
+#ifdef UNIXNU_BUILD
+  PublishBootHandoff (EntryArg, RawEntryArg, EntrySctlr, EntryPar);
+#endif
+
   // Run Library Cconstructors
   ProcessLibraryConstructorList ();
 
@@ -148,7 +365,7 @@ SecMain (VOID)
 }
 
 VOID
-SecEntry (VOID)
+SecEntry (IN UINT64 EntryArg, IN UINT64 RawEntryArg, IN UINT64 EntrySctlr, IN UINT64 EntryPar)
 {
   // Disable Data Cache
   ArmDisableDataCache ();
@@ -160,8 +377,8 @@ SecEntry (VOID)
   ArmEnableInstructionCache ();
 
   // Invalidate Stack & UEFI FD D-Cache
-  InvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdCPUCoresStackBase), FixedPcdGet32 (PcdCPUCorePrimaryStackSize));
-  InvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdFdBaseAddress),     FixedPcdGet32 (PcdFdSize));
+  WriteBackInvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdCPUCoresStackBase), FixedPcdGet32 (PcdCPUCorePrimaryStackSize));
+  WriteBackInvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdFdBaseAddress),     FixedPcdGet32 (PcdFdSize));
 
   // Verify Exception Vector Table
   ASSERT (((UINTN)SecVectorTable & ARM_VECTOR_TABLE_ALIGNMENT) == 0);
@@ -170,5 +387,5 @@ SecEntry (VOID)
   ArmWriteVBar ((UINTN)SecVectorTable);
 
   // Enter Main SEC Function
-  SecMain ();
+  SecMain (EntryArg, RawEntryArg, EntrySctlr, EntryPar);
 }

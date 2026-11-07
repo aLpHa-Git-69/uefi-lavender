@@ -83,6 +83,14 @@ READ_LOCK_STATUS   = TRUE
   !include Include/DXE.inc
   !include Include/RAW.inc
 
+!ifdef $(UNIXNU_BUILD)
+  INF UniXNUPkg/Application/UniXNU/UniXNU.inf
+  INF UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
+  INF UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
+  INF DarwinBootPkg/Driver/DarwinBoot.inf
+  INF LavenderBringupPkg/Driver/LavenderHandoffDxe/LavenderHandoffDxe.inf
+!endif
+
   # RAM Manager
   INF SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
 

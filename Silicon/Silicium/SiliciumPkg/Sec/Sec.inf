@@ -32,6 +32,8 @@
 
 [LibraryClasses]
   ArmLib
+  BaseLib
+  FdtLib
   PrePiLib
   DebugLib
   DebugAgentLib

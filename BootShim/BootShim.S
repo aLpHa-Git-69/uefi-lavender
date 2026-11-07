@@ -7,7 +7,7 @@ _StackBase:
   .quad FD_BASE         /* Text Offset */
 
 _StackSize:
-  .quad FD_SIZE         /* Image Size */
+  .quad FD_SIZE + (_Payload - _Head) /* Shim plus firmware Image Size */
   .quad 0               /* Flags */
   .quad 0               /* Reserved */
   .quad 0               /* Reserved */

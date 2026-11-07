@@ -27,6 +27,13 @@
 
 !include StarlordPkg/StarlordPkg.dsc.inc
 
+!ifdef $(UNIXNU_BUILD)
+[BuildOptions]
+  # Keep the copied FDT and up-to-20 MiB FAT payload disjoint within the
+  # already reserved Kernel window; see BootHandoffCopiesWithin().
+  *_CLANGPDB_AARCH64_CC_FLAGS = -DUNIXNU_BUILD -DLAVENDER_STAGE1 -DUNIXNU_HANDOFF_BASE=0x80000000ULL -DUNIXNU_HANDOFF_END=0x85800000ULL -DUNIXNU_FDT_COPY_BASE=0x85400000ULL -DUNIXNU_INITRD_COPY_BASE=0x84000000ULL
+!endif
+
 [PcdsFixedAtBuild]
   #
   # DDR Memory
@@ -60,6 +67,10 @@
   #
   gQcomPkgTokenSpaceGuid.PcdPlatformType|"LA"
 
+!ifdef $(UNIXNU_BUILD)
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUDeviceModel|"lavender"
+!endif
+
 [LibraryClasses]
   #
   # Memory Libraries
@@ -71,8 +82,23 @@
   #
   ConfigurationMapLib|lavenderPkg/Library/ConfigurationMapLib/ConfigurationMapLib.inf
 
+!ifdef $(UNIXNU_BUILD)
+  UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
+!endif
+
 [Components]
   #
   # ACPI Tables
   #
   lavender/AcpiTables.inf
+
+!ifdef $(UNIXNU_BUILD)
+  UniXNUPkg/Application/UniXNU/UniXNU.inf
+  UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
+  UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
+  DarwinBootPkg/Driver/DarwinBoot.inf
+
+  # Built for the FAT payload, rather than embedded in the firmware volume.
+  LavenderBringupPkg/Application/LavenderProbe/LavenderProbe.inf
+  LavenderBringupPkg/Driver/LavenderHandoffDxe/LavenderHandoffDxe.inf
+!endif

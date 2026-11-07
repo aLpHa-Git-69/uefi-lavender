@@ -25,7 +25,8 @@
 !include QcomPkg/QcomPkg.dsc.inc
 
 [BuildOptions]
-  *_*_AARCH64_CC_FLAGS = -march=armv8-a+crypto+rcpc
+  # Kryo 260 is ARMv8.0: neither the Silver nor Gold cores implement RCpc.
+  *_*_AARCH64_CC_FLAGS = -march=armv8-a+crypto -mno-outline-atomics
 
 [PcdsFixedAtBuild]
   #

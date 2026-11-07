@@ -80,4 +80,8 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
   INF MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
   INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
+!ifdef $(UNIXNU_BUILD)
+  INF UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
+  INF LavenderBringupPkg/Driver/LavenderHandoffDxe/LavenderHandoffDxe.inf
+!endif
 }
