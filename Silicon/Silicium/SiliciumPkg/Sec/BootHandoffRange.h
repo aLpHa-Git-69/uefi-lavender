@@ -7,7 +7,7 @@
 #ifndef BOOT_HANDOFF_RANGE_H
 #define BOOT_HANDOFF_RANGE_H
 
-STATIC
+STATIC inline
 BOOLEAN
 BootHandoffRangeWithin (
   IN UINT64  Base,
@@ -23,7 +23,7 @@ BootHandoffRangeWithin (
 
 // Two independently reserved windows, with no reliance on the intervening RAM.
 // Each range is contained before its end address is used in the overlap test.
-STATIC
+STATIC inline
 BOOLEAN
 BootHandoffCopiesAcrossWindows (
   IN UINT64  FdtBase,
@@ -44,7 +44,7 @@ BootHandoffCopiesAcrossWindows (
 
 // The original small-payload profile keeps both copies in the Kernel window.
 // lavender's 0x84000000..0x85400000 slot is exactly 20 MiB.
-STATIC
+STATIC inline
 BOOLEAN
 BootHandoffCopiesWithin (
   IN UINT64  FdtBase,
