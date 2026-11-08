@@ -96,10 +96,17 @@ PrepareBootHandoff (
   }
 
   Length = End - Start;
-  // The OS FAT payload can fill the 20 MiB reserved slot below the FDT.
-  // Keep both copies disjoint and contained before touching payload memory.
+  // The platform describes both copy destinations as reserved before DXE.
+  // A Windows PE build uses a disjoint high-RAM payload window; the original
+  // small-payload build retains its 20 MiB slot below the copied FDT.
+#ifdef WINDOWS_BUILD
+  if (!BootHandoffCopiesAcrossWindows (UNIXNU_FDT_COPY_BASE, FdtBytes,
+        UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END, UNIXNU_INITRD_COPY_BASE, Length,
+        UNIXNU_INITRD_COPY_BASE, UNIXNU_INITRD_COPY_END))
+#else
   if (!BootHandoffCopiesWithin (UNIXNU_FDT_COPY_BASE, FdtBytes,
         UNIXNU_INITRD_COPY_BASE, Length, UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END))
+#endif
   {
     return UNIXNU_FDT_COPY_BASE;
   }
@@ -208,7 +215,11 @@ PublishBootHandoff (
       Diagnostic->InitrdEnd   = End;
       Diagnostic->Status     = 7;
       if ((End <= Start) || ((End - Start) % 512 != 0) ||
+#ifdef WINDOWS_BUILD
+          !BootHandoffRangeWithin (Start, End - Start, UNIXNU_INITRD_COPY_BASE, UNIXNU_INITRD_COPY_END) ||
+#else
           !BootHandoffRangeWithin (Start, End - Start, UNIXNU_HANDOFF_BASE, UNIXNU_HANDOFF_END) ||
+#endif
           ((Start < EntryArg + FdtSize) && (EntryArg < End)))
       {
         DEBUG ((DEBUG_ERROR, "LAVENDERHOB: initrd 0x%lx-0x%lx is not a protected, disjoint sector range\n", Start, End));
